@@ -20,10 +20,11 @@ For more information, see the model classes themselves.
 """
 from __future__ import print_function as _pf
 
-__version__ = '0.2.3'
+__version__ = '0.2.3.2'
 
 # Hidden stuff.
 import os as _os
+from . import config
 from importlib.resources import files as _files
 from sqlalchemy import create_engine as _create_engine
 from sqlalchemy.orm import sessionmaker as _sessionmaker

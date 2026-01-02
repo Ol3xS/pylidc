@@ -14,6 +14,8 @@ from matplotlib.widgets import Slider
 from scipy.sparse.csgraph import connected_components
 from .annotation_distance_metrics import metrics
 
+# Import config module for programmatic path setting
+from . import config as pl_config
 
 try:
     import configparser
@@ -65,6 +67,10 @@ def _get_dicom_file_path_from_config_file():
         return parser.get(section='dicom', option='path')
     except (configparser.NoSectionError,
             configparser.NoOptionError):
+        # Don't warn or create config file if programmatic path is set
+        if pl_config.get_dicom_path() is not None:
+            return None
+
         msg = ("Could not find `dicom` configuration section or "
                " `path` configuration option under that section."
                "A template config file will be written to {}.")
@@ -79,9 +85,40 @@ def _get_dicom_file_path_from_config_file():
         return parser.get(section='dicom', option='path')
 
 
-_off_limits = ['id','study_instance_uid','series_instance_uid',
-               'patient_id','slice_thickness','pixel_spacing',
-               'contrast_used','is_from_initial','sorted_dicom_file_names']
+def _get_dicom_path(dicom_path=None):
+    """
+    Get the DICOM path with the following precedence:
+    1. Argument passed directly (dicom_path parameter)
+    2. Programmatically set via pl_config.set_dicom_path()
+    3. Config file (~/.pylidcrc or ~/pylidc.conf)
+
+    Parameters
+    ----------
+    dicom_path : str, optional
+        Direct path override
+
+    Returns
+    -------
+    str or None
+        The resolved DICOM path, or None if not configured
+    """
+    # 1. Direct argument takes highest precedence
+    if dicom_path is not None:
+        path = os.path.expanduser(dicom_path)
+        return os.path.abspath(path)
+
+    # 2. Check programmatic configuration
+    prog_path = pl_config.get_dicom_path()
+    if prog_path is not None:
+        return prog_path
+
+    # 3. Fall back to config file
+    return _get_dicom_file_path_from_config_file()
+
+
+_off_limits = ['id', 'study_instance_uid', 'series_instance_uid',
+               'patient_id', 'slice_thickness', 'pixel_spacing',
+               'contrast_used', 'is_from_initial', 'sorted_dicom_file_names']
 
 
 class Scan(Base):
@@ -96,15 +133,15 @@ class Scan(Base):
     study_instance_uid: string
         DICOM attribute (0020,000D).
 
-    series_instance_uid: string 
+    series_instance_uid: string
         DICOM attribute (0020,000E).
 
     patient_id: string
-        Identifier of the form "LIDC-IDRI-dddd" where dddd is a string of 
+        Identifier of the form "LIDC-IDRI-dddd" where dddd is a string of
         integers.
 
     slice_thickness: float
-        DICOM attribute (0018,0050). Note that this may not be 
+        DICOM attribute (0018,0050). Note that this may not be
         equal to the `slice_spacing` attribute (see below).
 
     slice_zvals: ndarray
@@ -120,20 +157,20 @@ class Scan(Base):
         ----
         This attribute is typically (but not always!) the
         same as the `slice_thickness` attribute. Furthermore,
-        the `slice_spacing` does NOT necessarily imply that all the 
+        the `slice_spacing` does NOT necessarily imply that all the
         slices are spaced with spacing (although they often are).
 
     pixel_spacing: float
-        Dicom attribute (0028,0030). This is normally two 
-        values. All scans in the LIDC have equal resolutions 
+        Dicom attribute (0028,0030). This is normally two
+        values. All scans in the LIDC have equal resolutions
         in the transverse plane, so only one value is used here.
 
     contrast_used: bool
-        If the DICOM file for the scan had any Contrast tag, 
+        If the DICOM file for the scan had any Contrast tag,
         this is marked as `True`.
 
-    is_from_initial: bool 
-        Indicates whether or not this PatientID was tagged as 
+    is_from_initial: bool
+        Indicates whether or not this PatientID was tagged as
         part of the initial 399 release.
 
     sorted_dicom_file_names: string
@@ -159,40 +196,63 @@ class Scan(Base):
         print(len(scan.annotations))
         # => 11
     """
-    __tablename__           = 'scans'
-    id                      = sq.Column('id', sq.Integer, primary_key=True)
-    study_instance_uid      = sq.Column('study_instance_uid', sq.String)
-    series_instance_uid     = sq.Column('series_instance_uid', sq.String)
-    patient_id              = sq.Column('patient_id', sq.String)
-    slice_thickness         = sq.Column('slice_thickness', sq.Float)
-    pixel_spacing           = sq.Column('pixel_spacing', sq.Float)
-    contrast_used           = sq.Column('contrast_used', sq.Boolean)
-    is_from_initial         = sq.Column('is_from_initial', sq.Boolean)
+    __tablename__ = 'scans'
+    id = sq.Column('id', sq.Integer, primary_key=True)
+    study_instance_uid = sq.Column('study_instance_uid', sq.String)
+    series_instance_uid = sq.Column('series_instance_uid', sq.String)
+    patient_id = sq.Column('patient_id', sq.String)
+    slice_thickness = sq.Column('slice_thickness', sq.Float)
+    pixel_spacing = sq.Column('pixel_spacing', sq.Float)
+    contrast_used = sq.Column('contrast_used', sq.Boolean)
+    is_from_initial = sq.Column('is_from_initial', sq.Boolean)
     sorted_dicom_file_names = sq.Column('sorted_dicom_file_names', sq.String)
 
     def __repr__(self):
-        return "Scan(id=%d,patient_id=%s)" % (self.id,self.patient_id)
+        return "Scan(id=%d,patient_id=%s)" % (self.id, self.patient_id)
 
     def __setattr__(self, name, value):
         if name in _off_limits:
             msg = "Trying to assign read-only Scan object attribute \
-                   `%s` a value of `%s`." % (name,value)
+                   `%s` a value of `%s`." % (name, value)
             raise ValueError(msg)
         else:
-            super(Scan, self).__setattr__(name,value)
+            super(Scan, self).__setattr__(name, value)
 
-    def get_path_to_dicom_files(self):
+    def get_path_to_dicom_files(self, dicom_path=None):
         """
-        Get the path to where the DICOM files are stored for this scan, 
-        relative to the root path set in the pylidc configuration file (i.e.,
-        `~/.pylidc` in MAC and Linux).
-        
+        Get the path to where the DICOM files are stored for this scan.
+
+        The path is determined in the following order of precedence:
+        1. `dicom_path` argument passed directly to this method
+        2. Path set via `pylidc.config.set_dicom_path()`
+        3. Path from config file (~/.pylidcrc or ~/pylidc.conf)
+
+        Parameters
+        ----------
+        dicom_path : str, optional
+            Direct path to LIDC-IDRI directory. If provided, overrides
+            both programmatic and config file settings.
+
+        Returns
+        -------
+        str
+            Path to directory containing this scan's DICOM files.
+
+        Raises
+        ------
+        RuntimeError
+            If no DICOM path is configured.
+        IOError
+            If DICOM files cannot be found at the configured path.
+
+        Notes
+        -----
         1. In older downloads, the data DICOM data would download as::
 
                [...]/LIDC-IDRI/LIDC-IDRI-dddd/uid1/uid2/dicom_file.dcm
 
            where [...] is the base path set in the pylidc configuration
-           filee; uid1 is `Scan.study_instance_uid`; and, uid2
+           file; uid1 is `Scan.study_instance_uid`; and, uid2
            is `Scan.series_instance_uid` .
 
         2. However, in more recent downloads, the data is downloaded like::
@@ -203,22 +263,48 @@ class Scan(Base):
            by TCIA.
 
         We first check option 1. Otherwise, we check if the
-        "LIDC-IDRI-dddd" folder exists in the root path. If so, then we 
+        "LIDC-IDRI-dddd" folder exists in the root path. If so, then we
         recursively search the "LIDC-IDRI-dddd" directory until we find
         the correct subfolder that contains a DICOM file with the correct
         `study_instance_uid` and `series_instance_uid`.
 
         Option 2 is less efficient than 1; however, option 2 is robust.
-        """
-        dicompath = _get_dicom_file_path_from_config_file()
 
-        if not os.path.exists(dicompath):
-            msg = ("Could not establish path to dicom files. Have you "
-                   "specified the `path` option in the configuration "
-                   "file {}?")
+        Example
+        -------
+        Three ways to use this method::
+
+            import pylidc as pl
+
+            # Method 1: Set path globally (recommended)
+            pl.config.set_dicom_path("/path/to/LIDC-IDRI")
+            scan = pl.query(pl.Scan).first()
+            path = scan.get_path_to_dicom_files()
+
+            # Method 2: Pass path directly
+            path = scan.get_path_to_dicom_files(dicom_path="/path/to/LIDC-IDRI")
+
+            # Method 3: Use config file (~/.pylidcrc)
+            # [dicom]
+            # path = /path/to/LIDC-IDRI
+            path = scan.get_path_to_dicom_files()
+        """
+        effective_path = _get_dicom_path(dicom_path)
+
+        if not effective_path or not os.path.exists(effective_path):
+            msg = ("Could not establish path to dicom files. "
+                   "You can either:\n"
+                   "  1. Set path programmatically:\n"
+                   "       import pylidc as pl\n"
+                   "       pl.config.set_dicom_path('/path/to/LIDC-IDRI')\n"
+                   "  2. Pass path directly to this method:\n"
+                   "       scan.get_path_to_dicom_files(dicom_path='/path/to/LIDC-IDRI')\n"
+                   "  3. Create config file {} with:\n"
+                   "       [dicom]\n"
+                   "       path = /path/to/LIDC-IDRI")
             raise RuntimeError(msg.format(_get_config_file()))
 
-        base = os.path.join(dicompath, self.patient_id)
+        base = os.path.join(effective_path, self.patient_id)
 
         if not os.path.exists(base):
             msg = "Couldn't find DICOM files for {} in {}"
@@ -229,9 +315,9 @@ class Scan(Base):
                             self.series_instance_uid)
 
         # Check if old path first. If not found, do recursive search.
-        if not os.path.exists(path): # and base exists
+        if not os.path.exists(path):  # and base exists
             found = False
-            for dpath,dnames,fnames in os.walk(base):
+            for dpath, dnames, fnames in os.walk(base):
                 # Skip if no files in current dir.
                 if len(fnames) == 0: continue
 
@@ -251,24 +337,33 @@ class Scan(Base):
                 stid = str(dimage.StudyInstanceUID).strip()
 
                 if seid == self.series_instance_uid and \
-                   stid == self.study_instance_uid:
+                        stid == self.study_instance_uid:
                     path = dpath
                     found = True
                     break
 
             if not found:
-                raise IOError("Couldn't find DICOM files for %s."%self)
+                raise IOError("Couldn't find DICOM files for %s." % self)
 
         return path
 
-    def load_all_dicom_images(self, verbose=True):
+    def load_all_dicom_images(self, verbose=True, dicom_path=None):
         """
         Load all the DICOM images assocated with this scan and return as list.
 
         Parameters
         ----------
-        verbose: bool
+        verbose : bool, default=True
             Turn the loading method on/off.
+
+        dicom_path : str, optional
+            Direct path to LIDC-IDRI directory. If provided, overrides
+            both programmatic and config file settings.
+
+        Returns
+        -------
+        list
+            List of pydicom Dataset objects, sorted by z-coordinate.
 
         Example
         -------
@@ -277,77 +372,79 @@ class Scan(Base):
             import pylidc as pl
             import matplotlib.pyplot as plt
 
+            # Set path once
+            pl.config.set_dicom_path("/path/to/LIDC-IDRI")
+
             scan = pl.query(pl.Scan).first()
 
             images = scan.load_all_dicom_images()
             zs = [float(img.ImagePositionPatient[2]) for img in images]
             print(zs[1] - zs[0], images[0].SliceThickness, scan.slice_thickness)
-            
+
             plt.imshow(images[0].pixel_array, cmap=plt.cm.gray)
             plt.show()
 
         """
         if verbose: print("Loading dicom files ... This may take a moment.")
 
-        path = self.get_path_to_dicom_files()
+        path = self.get_path_to_dicom_files(dicom_path=dicom_path)
         fnames = [fname for fname in os.listdir(path)
-                            if fname.endswith('.dcm') and not fname.startswith(".")]
+                  if fname.endswith('.dcm') and not fname.startswith(".")]
         images = []
         for fname in fnames:
-            image = dicom.dcmread(os.path.join(path,fname))
+            image = dicom.dcmread(os.path.join(path, fname))
 
             seid = str(image.SeriesInstanceUID).strip()
             stid = str(image.StudyInstanceUID).strip()
 
-            if seid == self.series_instance_uid and\
-               stid == self.study_instance_uid:
+            if seid == self.series_instance_uid and \
+                    stid == self.study_instance_uid:
                 images.append(image)
 
         # ##############################################
         # Clean multiple z scans.
         #
-        # Some scans contain multiple slices with the same `z` coordinate 
+        # Some scans contain multiple slices with the same `z` coordinate
         # from the `ImagePositionPatient` tag.
-        # The arbitrary choice to take the slice with lesser 
+        # The arbitrary choice to take the slice with lesser
         # `InstanceNumber` tag is made.
         # This takes some work to accomplish...
-        zs    = [float(img.ImagePositionPatient[-1]) for img in images]
+        zs = [float(img.ImagePositionPatient[-1]) for img in images]
         inums = [float(img.InstanceNumber) for img in images]
         inds = list(range(len(zs)))
         while np.unique(zs).shape[0] != len(inds):
             for i in inds:
                 for j in inds:
-                    if i!=j and zs[i] == zs[j]:
+                    if i != j and zs[i] == zs[j]:
                         k = i if inums[i] > inums[j] else j
                         inds.pop(inds.index(k))
 
         # Prune the duplicates found in the loops above.
-        zs     = [zs[i]     for i in range(len(zs))     if i in inds]
+        zs = [zs[i] for i in range(len(zs)) if i in inds]
         images = [images[i] for i in range(len(images)) if i in inds]
 
         # Sort everything by (now unique) ImagePositionPatient z coordinate.
         sort_inds = np.argsort(zs)
-        images    = [images[s] for s in sort_inds]
+        images = [images[s] for s in sort_inds]
         # End multiple z clean.
         # ##############################################
 
         return images
 
-
     def cluster_annotations(self, metric='min', tol=None, factor=0.9,
                             min_tol=1e-1, return_distance_matrix=False,
                             verbose=True):
         """
-        Estimate which annotations refer to the same physical 
+        Estimate which annotations refer to the same physical
         nodule in the CT scan. This method clusters all nodule Annotations for
         a Scan by computing a distance measure between the annotations.
-        
+
         Parameters
         ------
         metric: string or callable, default 'min'
             If string, see::
 
-                from pylidc.annotation_distance_metrics import 
+                from pylidc.annotation_distance_metrics import
                 print(metrics metrics.keys())
 
             for available metrics. If callable, the provided function,
@@ -355,7 +452,7 @@ class Scan(Base):
             `isinstance( metric(ann1, ann2), float )`.
 
         tol: float, default=None
-            A distance in millimeters. Annotations are grouped when 
+            A distance in millimeters. Annotations are grouped when
             the minimum distance between their boundary contour points
             is less than `tol`. If `tol = None` (the default), then
             `tol = scan.pixel_spacing` is used.
@@ -367,9 +464,9 @@ class Scan(Base):
 
         min_tol: float, default=0.1
             If `tol` is reduced below `min_tol` (see the `factor` parameter),
-            then the routine exits because we conclude that the annotation 
-            groups cannot be automatically reduced to have groups 
-            with each group having `Annotations<=4` (as expected 
+            then the routine exits because we conclude that the annotation
+            groups cannot be automatically reduced to have groups
+            with each group having `Annotations<=4` (as expected
             with LIDC data).
 
         return_distance_matrix: bool, default False
@@ -383,15 +480,15 @@ class Scan(Base):
         ------
         clusters: list of lists.
             `clusters[i]` is a list of :class:`pylidc.Annotation` objects
-            that refer to the same physical nodule in the Scan. `len(clusters)` 
+            that refer to the same physical nodule in the Scan. `len(clusters)`
             estimates the number of unique physical nodules in the Scan.
 
         Note
         ----
-        The "distance" matrix, `d[i,j]`, between all Annotations for 
+        The "distance" matrix, `d[i,j]`, between all Annotations for
         the Scan is first computed using the provided `metric` parameter.
-        Annotations are said to be adjacent when `d[i,j]<=tol`. 
-        Annotation groups are determined by finding the connected components 
+        Annotations are said to be adjacent when `d[i,j]<=tol`.
+        Annotation groups are determined by finding the connected components
         of the graph associated with this adjacency matrix.
 
         Example
@@ -399,13 +496,13 @@ class Scan(Base):
         An example::
 
             import pylidc as pl
-            
+
             scan = pl.query(pl.Scan).first()
             nodules = scan.cluster_annotations()
 
             print("This can has %d nodules." % len(nodules))
             # => This can has 4 nodules.
-            
+
             for i,nod in enumerate(nodules):
                 print("Nodule %d has %d annotations." % (i+1,len(nod)))
             # => Nodule 1 has 4 annotations.
@@ -431,40 +528,40 @@ class Scan(Base):
         assert tol >= 0, "`tol` should be >= 0."
 
         # Some special cases.
-        if   N == 0:
+        if N == 0:
             return []
         elif N == 1:
             return [[self.annotations[0]]]
 
-        D = np.zeros((N,N)) # The distance matrix.
+        D = np.zeros((N, N))  # The distance matrix.
 
         for i in range(N):
-            for j in range(i+1,N):
-                D[i,j] = D[j,i] = metric(self.annotations[i],
-                                         self.annotations[j])
+            for j in range(i + 1, N):
+                D[i, j] = D[j, i] = metric(self.annotations[i],
+                                           self.annotations[j])
 
         adjacency = D <= tol
         nnods, cids = connected_components(adjacency, directed=False)
         ucids = np.unique(cids)
-        counts = [(cids==cid).sum() for cid in ucids]
+        counts = [(cids == cid).sum() for cid in ucids]
 
-        # Group again with smaller tolerance until there are 
+        # Group again with smaller tolerance until there are
         # no nodules with more than 4 annotations.
         while any([c > 4 for c in counts]):
             tol *= factor
             if tol < min_tol:
                 msg = "Failed to reduce all groups to <= 4 Annotations.\n"
-                msg+= "Some nodules may be close and must be grouped manually."
+                msg += "Some nodules may be close and must be grouped manually."
                 print(msg)
                 raise ClusterError
-            
+
             adjacency = D <= tol
             nnods, cids = connected_components(adjacency, directed=False)
             ucids = np.unique(cids)
-            counts = [(cids==cid).sum() for cid in ucids]
+            counts = [(cids == cid).sum() for cid in ucids]
 
         clusters = [[] for _ in range(nnods)]
-        for i,cid in enumerate(cids):
+        for i, cid in enumerate(cids):
             clusters[cid].append(self.annotations[i])
 
         # Sort the clusters by increasing average z value of centroids.
@@ -478,7 +575,7 @@ class Scan(Base):
         else:
             return clusters
 
-    def visualize(self, annotation_groups=None):
+    def visualize(self, annotation_groups=None, dicom_path=None):
         """
         Visualize the scan.
 
@@ -488,62 +585,69 @@ class Scan(Base):
             This argument should be supplied by the returned object from
             the `cluster_annotations` method.
 
+        dicom_path : str, optional
+            Direct path to LIDC-IDRI directory. If provided, overrides
+            both programmatic and config file settings.
+
         Example
         -------
         An example::
 
             import pylidc as pl
-            
+
+            pl.config.set_dicom_path("/path/to/LIDC-IDRI")
+
             scan = pl.query(pl.Scan).first()
             nodules = scan.cluster_annotations()
-            
+
             scan.visualize(annotation_groups=nodules)
 
         """
-        images = self.load_all_dicom_images()
+        images = self.load_all_dicom_images(dicom_path=dicom_path)
 
-        fig = plt.figure(figsize=(16,8))
-        current_slice = int( len(images) / 2 )
+        fig = plt.figure(figsize=(16, 8))
+        current_slice = int(len(images) / 2)
 
-        ax_image = fig.add_axes([0.5,0.0,0.5,1.0])
+        ax_image = fig.add_axes([0.5, 0.0, 0.5, 1.0])
         img = ax_image.imshow(images[current_slice].pixel_array,
                               cmap=plt.cm.gray)
 
-        ax_image.set_xlim(-0.5,511.5); ax_image.set_ylim(511.5,-0.5)
+        ax_image.set_xlim(-0.5, 511.5);
+        ax_image.set_ylim(511.5, -0.5)
         ax_image.axis('off')
 
         # Add annotation indicators if necessary.
         if annotation_groups is not None:
             nnods = len(annotation_groups)
             centroids = [np.array([a.centroid for a in group]).mean(0)
-                                          for group in annotation_groups]
-            radii = [np.mean([a.diameter/2 for a in group])
-                                        for group in annotation_groups]
+                         for group in annotation_groups]
+            radii = [np.mean([a.diameter / 2 for a in group])
+                     for group in annotation_groups]
 
             arrows = []
             for i in range(nnods):
                 r = radii[i]
                 c = centroids[i]
-                s = '%d Annotations'%len(annotation_groups[i])
+                s = '%d Annotations' % len(annotation_groups[i])
                 a = ax_image.annotate(s,
-                                      xy=(c[1]-r, c[0]-r),
-                                      xytext=(c[1]-50, c[0]-50),
+                                      xy=(c[1] - r, c[0] - r),
+                                      xytext=(c[1] - 50, c[0] - 50),
                                       bbox=dict(fc='w', ec='r'),
                                       arrowprops=dict(arrowstyle='->',
                                                       edgecolor='r'))
-                a.set_visible(False) # flipped on/off by `update` function.
+                a.set_visible(False)  # flipped on/off by `update` function.
                 arrows.append(a)
 
-        ax_scan_info = fig.add_axes([0.1, 0.7, 0.3, 0.15]) # l,b,w,h
+        ax_scan_info = fig.add_axes([0.1, 0.7, 0.3, 0.15])  # l,b,w,h
         ax_scan_info.set_facecolor('w')
         scan_info_table = ax_scan_info.table(cellText=[
-                ['Patient ID:', self.patient_id],
-                ['Slice thickness:', '%.3f mm' % self.slice_thickness],
-                ['Pixel spacing:', '%.3f mm' % self.pixel_spacing],
-                ['Manufacturer:', images[current_slice].Manufacturer],
-                ['Model name:', images[current_slice].ManufacturerModelName],
-                ['Convolution kernel:', images[current_slice].ConvolutionKernel],
-            ],
+            ['Patient ID:', self.patient_id],
+            ['Slice thickness:', '%.3f mm' % self.slice_thickness],
+            ['Pixel spacing:', '%.3f mm' % self.pixel_spacing],
+            ['Manufacturer:', images[current_slice].Manufacturer],
+            ['Model name:', images[current_slice].ManufacturerModelName],
+            ['Convolution kernel:', images[current_slice].ConvolutionKernel],
+        ],
             loc='center', cellLoc='left'
         )
         # Remove the table cell borders.
@@ -557,15 +661,15 @@ class Scan(Base):
         # If annotation_groups are provided, give a info table for them.
         if annotation_groups is not None and nnods != 0:
             # The values here were chosen heuristically.
-            ax_ann_grps = fig.add_axes([0.1, 0.45-nnods*0.01,
-                                        0.3, 0.2+0.01*nnods])
+            ax_ann_grps = fig.add_axes([0.1, 0.45 - nnods * 0.01,
+                                        0.3, 0.2 + 0.01 * nnods])
             txt = [['Num Nodules:', str(nnods)]]
             for i in range(nnods):
                 c = centroids[i]
                 g = annotation_groups[i]
-                txt.append(['Nodule %d:'%(i+1),
+                txt.append(['Nodule %d:' % (i + 1),
                             '%d annotations, near slice %d' \
-                                    % (len(g), int(c[2].round()))])
+                            % (len(g), int(c[2].round()))])
             ann_grps_table = ax_ann_grps.table(cellText=txt, loc='center',
                                                cellLoc='left')
             # Remove cell borders.
@@ -576,13 +680,12 @@ class Scan(Base):
             ax_ann_grps.set_xticks([])
             ax_ann_grps.set_yticks([])
 
-
         # Add the widgets.
         ax_slice = fig.add_axes([0.1, 0.1, 0.3, 0.05])
         ax_slice.set_facecolor('w')
         z = float(images[current_slice].ImagePositionPatient[-1])
-        sslice = Slider(ax_slice, 'Z: %.3f'%z, 0, len(images)-1,
-                         valinit=current_slice, valfmt=u'Slice: %d')
+        sslice = Slider(ax_slice, 'Z: %.3f' % z, 0, len(images) - 1,
+                        valinit=current_slice, valfmt=u'Slice: %d')
 
         def update(_):
             # Update image itself.
@@ -598,7 +701,7 @@ class Scan(Base):
                 for i in range(len(annotation_groups)):
                     centroid_z = self.slice_zvals[int(centroids[i][2].round())]
                     dist = abs(z - centroid_z)
-                    arrows[i].set_visible(dist <= 3*self.slice_spacing)
+                    arrows[i].set_visible(dist <= 3 * self.slice_spacing)
             fig.canvas.draw_idle()
 
         sslice.on_changed(update)
@@ -625,7 +728,7 @@ class Scan(Base):
         ----
         This attribute is typically (but not always!) the
         same as the `slice_thickness` attribute. Furthermore,
-        the `slice_spacing` does NOT necessarily imply that all the 
+        the `slice_spacing` does NOT necessarily imply that all the
         slices are spaced with spacing (although they often are).
         """
         return np.median(np.diff(self.slice_zvals))
@@ -633,18 +736,47 @@ class Scan(Base):
     @property
     def spacings(self):
         """
-        The spacings in the i, j, k image coordinate directions, as a 
+        The spacings in the i, j, k image coordinate directions, as a
         length 3 array.
         """
         return np.array([self.pixel_spacing,
                          self.pixel_spacing,
                          self.slice_spacing])
 
-    def to_volume(self, verbose=True):
+    def to_volume(self, verbose=True, dicom_path=None):
         """
         Return the scan as a 3D numpy array volume.
+
+        Parameters
+        ----------
+        verbose : bool, default=True
+            Turn the loading message on/off.
+
+        dicom_path : str, optional
+            Direct path to LIDC-IDRI directory. If provided, overrides
+            both programmatic and config file settings.
+
+        Returns
+        -------
+        ndarray
+            3D numpy array of shape (512, 512, num_slices) containing
+            the CT image data in Hounsfield units.
+
+        Example
+        -------
+        An example::
+
+            import pylidc as pl
+
+            # Set path once at the start
+            pl.config.set_dicom_path("/path/to/LIDC-IDRI")
+
+            scan = pl.query(pl.Scan).first()
+            vol = scan.to_volume()
+            print(vol.shape)
+            # => (512, 512, 133)
         """
-        images = self.load_all_dicom_images(verbose=verbose)
+        images = self.load_all_dicom_images(verbose=verbose, dicom_path=dicom_path)
 
         volume = np.stack(
             [
